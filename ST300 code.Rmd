@@ -1,0 +1,530 @@
+---
+title: "Life Expectancy Multiple Linear Regression Analysis"
+output:
+  html_document: default
+  pdf_document: default
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Importing libraries
+```{r}
+library(arm)
+library(ggplot2)
+library(car)
+library(tidyr)
+library(dplyr)
+library(leaps)
+library(gridExtra)
+options(max.print=9999999) # So we can increase the amount that is printed in R
+```
+
+## Dataset and Data Cleaning
+Importing the csv and looking at some summary statistics
+```{r}
+# Data from WHO
+df <- read.csv("Life Expectancy Data.csv", header = TRUE)
+head(df)
+
+nrow(df)
+# 2938 observations
+
+names(df)
+class(df)
+
+str(df)
+# Since there are 193 categories for the country predictor, 
+# not reasonable to use it in the model as it reduces interpretability significantly
+# hence, I will convert it to a Continent variable
+```
+### Recoding variable names
+```{r}
+colnames(df) <- c("Country", "Year", "Status", "Life_Expectancy", "Adult_Mortality", "Infant_Deaths",
+                  "Alcohol", "Percentage_Expenditure", "Hepatitis_B", "Measles", "BMI",
+                  "Under_Five_Deaths", "Polio", "Total_Expenditure", "Diphtheria", "HIV_AIDS",
+                  "GDP", "Population", "Thinness_1_19_years", "Thinness_5_9_years",
+                  "Income_Composition_Of_Resources", "Schooling")
+```
+
+### Changing country category intoa Continents category
+```{r}
+unique(df$Country)
+library(countrycode)
+df$Continent <- countrycode(sourcevar = df[, "Country"],
+                            origin = "country.name",
+                            destination = "continent")
+
+unique(df$Continent)
+```
+
+```{r}
+# Removing missing values for life expectancy
+sum(is.na(df$Life_Expectancy))
+
+df <- subset(df, !is.na(Life_Expectancy))
+
+# Removing Countries variable
+df <- df[, -1]
+
+# Converting columns to categorical predictors using factor
+cols <- c(2, 22)
+df[cols] <- lapply(df[cols], factor)
+str(df)
+```
+
+
+## EDA
+```{r}
+hist(df$Life_Expectancy, col = "green", main = "Histogram of Life Expectancy", xlab = "Life Expectancy")
+```
+
+
+```{r}
+## Continuous Predictors (Scatterplots)
+special.dat <- gather(data = df[, -c(2, 22)], -Life_Expectancy, key = "var", value = "value")
+p1 <- ggplot(special.dat, aes(x = value, y = Life_Expectancy)) + geom_point(size = 0.5) +
+  geom_smooth(method = "lm", se = FALSE) + facet_wrap(~var, scales = "free_x")
+p1 <- p1 + theme_bw() + scale_fill_grey() + theme(legend.position = "none")
+p1
+```
+
+
+```{r}
+## Categorical Predictors (Boxplots)
+special.dat <- gather(data = df[, c(2, 3, 22)], -Life_Expectancy, key = "var", value = "value")
+p2 <- ggplot(special.dat, aes(x = factor(value), y = Life_Expectancy)) + geom_point(size = 0.5) +
+  geom_boxplot(fill = 'blue') + facet_wrap(~var, scales = "free_x")
+p2 <- p2 + theme_bw() + scale_fill_grey() + theme(legend.position = "none")
+p2
+```
+
+```{r}
+p2 <- ggplot(df, aes(x = Continent, y = Life_Expectancy))+ geom_point(size = 0.5) +
+  geom_boxplot(fill = 'blue') + theme_bw() + scale_fill_grey() + theme(legend.position = "none")
+```
+
+### Missing values
+```{r}
+# Proportion of missing values
+(colSums(is.na(df))/nrow(df))*100
+
+# As Population, Hepatitis_B and GDP have over 15% of missing values (high levels of missingness), will remove these variables in my analysis to ensure that the model has enough data to be trained with (since R will drop every row with missing data). Although the value being missing might be representative or something.
+
+# Will drop the rows with na
+df <- subset(df, select = -c(Population, Hepatitis_B, GDP))
+
+df <- na.omit(df)
+nrow(df)
+```
+
+
+## Models 
+```{r}
+# Forward stepwise selection
+null <- lm(Life_Expectancy ~ 1, data=df)
+
+full <- lm(Life_Expectancy ~ ., data = df)
+
+forward <- step(null, direction='forward', scope=formula(full), trace=0)
+
+forward$anova
+summary(forward)
+```
+
+
+```{r}
+# Backwards Stepwise selection
+backward <- step(full, trace= 0)
+
+backward$anova
+summary(backward)
+# Both are the same
+```
+
+```{r}
+best_subset <- regsubsets(Life_Expectancy ~ ., data = df, nvmax= 22)
+
+summary(best_subset)
+par(mfrow=c(1,2))
+plot(best_subset, scale = "bic")
+plot(best_subset, scale = "adjr")
+
+# Same result for bic and adjr
+names(summary(best_subset))
+summary(best_subset)$rsq
+
+# Remove Year, Measles, Total_Expenditure, both thininess
+
+best_subset_model <- lm(Life_Expectancy ~ . - Year - Measles -Total_Expenditure - Thinness_5_9_years
+                        -Thinness_1_19_years, data = df)
+```
+
+```{r}
+summary(best_subset_model)
+```
+
+```{r}
+# All 3 resulted in the same model, therefore, will proceed with this model
+life_exp_lm_1 <- backward
+```
+
+### VIF
+```{r}
+car::vif(life_exp_lm_1)
+# Seems like Infant_Deaths highly correlated with Under_Five_Deaths, remove Under_Five_Deaths as higher GVIF then check again
+```
+
+```{r}
+life_exp_lm_1 <- best_subset_model <- lm(Life_Expectancy ~ . - Year - Measles -Total_Expenditure - Thinness_5_9_years -Thinness_1_19_years - Under_Five_Deaths , data = df)
+car::vif(life_exp_lm_1)
+summary(life_exp_lm_1)
+```
+
+## Transformations
+### Transformations of outcome
+```{r}
+par(mfrow=c(2,2))
+plot(life_exp_lm_1)
+
+# Tried a log transform for the outcome variable, but from looking at the significant variables and the plots, decided not to do it as it is not clearly better and also less interpretable
+life_exp_lm_log <-  lm(log(Life_Expectancy) ~ . - Year - Measles -Total_Expenditure - Thinness_5_9_years -Thinness_1_19_years - Under_Five_Deaths , data = df)
+summary(life_exp_lm_log)
+# R^2 is actually worse
+plot(life_exp_lm_log)
+```
+
+### Predictor Transformations
+```{r}
+var.number = c(c(1),c(4:18)) # Continuous variables and excluding Life_Expectancy
+
+corrs <- c(rep(NaN,19)) # Vector to store the correlation of each feature with PE
+
+df_only_positive <- df[rowSums(df[c(c(1),c(4:18))] <= 0) == 0,] # need to only keep postive values for log transform/other transformations
+
+# Log
+for (i in var.number) {
+  if ((abs(cor(df_only_positive$Life_Expectancy,df_only_positive[i])) < abs(cor(df_only_positive$Life_Expectancy, log(df_only_positive[i]))))[1]) {
+    print(paste("Better to log transform", colnames(df)[i]))
+  }
+    
+}
+
+# Reciprocal
+for (i in var.number) {
+  if ((abs(cor(df_only_positive$Life_Expectancy,df_only_positive[i])) < abs(cor(df_only_positive$Life_Expectancy, 1/(df_only_positive[i]))))[1]) {
+    print(paste("Better to apply a recipricoal to", colnames(df)[i]))
+  }
+    
+}
+
+# Sqrt
+for (i in var.number) {
+  if ((abs(cor(df_only_positive$Life_Expectancy,df_only_positive[i])) < abs(cor(df_only_positive$Life_Expectancy, sqrt(df_only_positive[i]))))[1]) {
+    print(paste("Better to apply a square root to", colnames(df)[i]))
+  }
+    
+}
+
+# For the ones in my model, Infant_Deaths, Percentage_Expenditure, and HIV_AIDS
+# Infant_Deaths
+abs(cor(df_only_positive$Life_Expectancy, (df_only_positive[5]))) 
+abs(cor(df_only_positive$Life_Expectancy, log(df_only_positive[5]))) 
+abs(cor(df_only_positive$Life_Expectancy, 1/(df_only_positive[5])))
+abs(cor(df_only_positive$Life_Expectancy, sqrt(df_only_positive[5])))
+# log second to reciprocal, however decided not to apply this transformation due to the loss of data
+
+# Percentage_Expenditure
+abs(cor(df_only_positive$Life_Expectancy, (df_only_positive[7]))) 
+abs(cor(df_only_positive$Life_Expectancy, log(df_only_positive[7]))) 
+abs(cor(df_only_positive$Life_Expectancy, 1/(df_only_positive[7])))
+abs(cor(df_only_positive$Life_Expectancy, sqrt(df_only_positive[7])))
+# Didn't include due to a marginal increase in R^2 but loss of data
+
+# HIV_AIDS
+abs(cor(df_only_positive$Life_Expectancy, (df_only_positive[14]))) 
+abs(cor(df_only_positive$Life_Expectancy, log(df_only_positive[14]))) 
+abs(cor(df_only_positive$Life_Expectancy, 1/(df_only_positive[14])))
+abs(cor(df_only_positive$Life_Expectancy, sqrt(df_only_positive[14])))
+# log best transformation, did not do due to loss of data and predictors becoming not significant
+```
+
+```{r}
+# Applying transformations to model to see if it is better
+df_only_positive <- df[df$Infant_Deaths > 0 , ]
+
+
+life_exp_lm_2 <-lm(Life_Expectancy ~ Status + Adult_Mortality + log(Infant_Deaths) + Alcohol
+                                      + Percentage_Expenditure + BMI + Polio + Diphtheria 
+                                      + HIV_AIDS + Income_Composition_Of_Resources 
+                                      + Schooling + Continent, data = df_only_positive)
+summary(life_exp_lm_2)
+# Number of data being trained on decreases by 759, R^2 improved but certain variables become insignificant including BMI. Also interpretability is worse
+
+life_exp_lm_2 <-lm(Life_Expectancy ~ Status + Adult_Mortality + Infant_Deaths + Alcohol
+                                      + Percentage_Expenditure + BMI + Polio + Diphtheria 
+                                      + log(HIV_AIDS) + Income_Composition_Of_Resources 
+                                      + Schooling + Continent, data = df)
+summary(life_exp_lm_2)
+# BMI, Oceania no longer significant
+
+df_only_positive <- df[df$Percentage_Expenditure > 0,]
+life_exp_lm_2 <-lm(Life_Expectancy ~ Status + Adult_Mortality + Infant_Deaths + Alcohol
+                                      + log(Percentage_Expenditure) + BMI + Polio + Diphtheria 
+                                      + HIV_AIDS + Income_Composition_Of_Resources 
+                                      + Schooling + Continent, data = df_only_positive)
+summary(life_exp_lm_2)
+
+
+```
+
+## Interactions
+
+```{r}
+# Viewing relationships between categorical and continuous predictors
+library(vctrs)
+special.dat <- gather(data = df[, -c(2, 22)], -Life_Expectancy, key = "var", value = "value")
+p1 <- ggplot(special.dat, aes(x = value, y = Life_Expectancy, colour = vec_rep(df$Status, 17))) + geom_point(size = 0.5) + geom_smooth(method = "lm", se = FALSE) + facet_wrap(~var, scales = "free_x")
+p1 <- p1 + theme_bw() + scale_fill_grey() + theme(legend.position = "none")
+p1
+```
+
+```{r}
+special.dat <- gather(data = df[, -c(2, 22)], -Life_Expectancy, key = "var", value = "value")
+p1 <- ggplot(special.dat, aes(x = value, y = Life_Expectancy, colour = vec_rep(df$Continent, 17))) + geom_point(size = 0.5) + geom_smooth(method = "lm", se = FALSE) + facet_wrap(~var, scales = "free_x")
+p1 <- p1 + theme_bw() + scale_fill_grey() + theme(legend.position = "none")
+p1
+```
+
+```{r}
+# Going forward with life_exp_lm_2
+
+life_exp_lm_3 <- lm(Life_Expectancy ~ Status + Adult_Mortality + Infant_Deaths + Alcohol
+                                      + Percentage_Expenditure + BMI + Polio + Diphtheria 
+                                      + HIV_AIDS + Income_Composition_Of_Resources 
+                                      + Schooling + Continent + Status*Percentage_Expenditure, data = df)
+
+summary(life_exp_lm_3)
+
+vif(life_exp_lm_3, type = 'predictor')
+# Significant interaction
+```
+
+```{r}
+life_exp_lm_3 <- lm(Life_Expectancy ~ Status + Adult_Mortality + Infant_Deaths + Alcohol
+                                      + Percentage_Expenditure + BMI + Polio + Diphtheria 
+                                      + HIV_AIDS + Income_Composition_Of_Resources 
+                                      + Schooling + Continent + Continent*Percentage_Expenditure, data = df)
+
+summary(life_exp_lm_3)
+vif(life_exp_lm_3, type = 'predictor')
+# Significantconti
+```
+
+```{r}
+life_exp_lm_3 <- lm(Life_Expectancy ~ Status + Adult_Mortality + Infant_Deaths + Alcohol
+                                      + Percentage_Expenditure + BMI + Polio + Diphtheria 
+                                      + HIV_AIDS + Income_Composition_Of_Resources 
+                                      + Schooling + Continent + Continent*BMI, data = df)
+
+summary(life_exp_lm_3)
+
+vif(life_exp_lm_3, type = 'predictor')
+# Significant interaction
+```
+
+
+```{r}
+life_exp_lm_3 <- lm(Life_Expectancy ~ Status + Adult_Mortality + Infant_Deaths + Alcohol
+                                      + Percentage_Expenditure + BMI + Polio + Diphtheria 
+                                      + HIV_AIDS + Income_Composition_Of_Resources 
+                                      + Schooling + Continent + Status*Diphtheria, data = df)
+
+summary(life_exp_lm_3)
+# Not a significant interaction at 5%
+```
+
+```{r}
+life_exp_lm_3 <- lm(Life_Expectancy ~ Status + Adult_Mortality + Infant_Deaths + Alcohol
+                                      + Percentage_Expenditure + BMI + Polio + Diphtheria 
+                                      + HIV_AIDS + Income_Composition_Of_Resources 
+                                      + Schooling + Continent + Continent*Income_Composition_Of_Resources, data = df)
+
+summary(life_exp_lm_3)
+
+vif(life_exp_lm_3, type = 'predictor')
+# Significant interaction but multicollinear
+```
+
+```{r}
+life_exp_lm_3 <- lm(Life_Expectancy ~ Status + Adult_Mortality + Infant_Deaths + Alcohol
+                                      + Percentage_Expenditure + BMI + Polio + Diphtheria 
+                                      + HIV_AIDS + Income_Composition_Of_Resources 
+                                      + Schooling + Continent + Continent*Schooling
+                                      , data = df)
+
+summary(life_exp_lm_3)
+
+vif(life_exp_lm_3, type = "predictor")
+# Significant interaction but multicollinear
+```
+
+```{r}
+life_exp_lm_3 <- lm(Life_Expectancy ~ Status + Adult_Mortality + Infant_Deaths + Alcohol
+                                      + Percentage_Expenditure + BMI + Polio + Diphtheria 
+                                      + HIV_AIDS + Income_Composition_Of_Resources 
+                                      + Schooling + Continent + Status*Adult_Mortality
+                                      , data = df)
+
+summary(life_exp_lm_3)
+
+vif(life_exp_lm_3, type = 'predictor')
+# Significant interaction
+```
+
+```{r}
+life_exp_lm_3 <- lm(Life_Expectancy ~ Status + Adult_Mortality + Infant_Deaths + Alcohol
+                                      + Percentage_Expenditure + BMI + Polio + Diphtheria 
+                                      + HIV_AIDS + Income_Composition_Of_Resources 
+                                      + Schooling + Continent + Alcohol*Adult_Mortality
+                                      , data = df)
+
+summary(life_exp_lm_3)
+
+# Not significant 
+```
+
+
+```{r}
+life_exp_lm_3 <- lm(Life_Expectancy ~ Status + Adult_Mortality + Infant_Deaths + Alcohol
+                                      + Percentage_Expenditure + BMI + Polio + Diphtheria 
+                                      + HIV_AIDS + Income_Composition_Of_Resources 
+                                      + Schooling + Continent + Polio*HIV_AIDS
+                                      , data = df)
+
+summary(life_exp_lm_3)
+
+# Not significant at 5%
+```
+
+```{r}
+life_exp_lm_3 <- lm(Life_Expectancy ~ Status + Adult_Mortality + Infant_Deaths + Alcohol
+                                      + Percentage_Expenditure + BMI + Polio + Diphtheria 
+                                      + HIV_AIDS + Income_Composition_Of_Resources 
+                                      + Schooling + Continent + Status*Percentage_Expenditure
+                                      + Continent*BMI + Status*Adult_Mortality
+                                      , data = df)
+
+summary(life_exp_lm_3)
+
+vif(life_exp_lm_3, type = 'predictor')
+
+```
+
+
+## Outliers
+
+
+```{r}
+# Cook's Distance
+cooks_threshold <- 4/nrow(df) # Using 4/n
+
+ggplot(life_exp_lm_3 , aes(seq_along(.cooksd), .cooksd)) +
+  geom_col() +
+  xlab("Observation number") + 
+  ylab("Cook's D") + 
+  geom_hline(yintercept = cooks_threshold , col='red')
+```
+
+```{r}
+avPlots(life_exp_lm_3)
+```
+
+
+```{r}
+# High leverage Points
+leverage_threshold <- mean(hatvalues(life_exp_lm_3))*2
+
+plot(hatvalues(life_exp_lm_3), type = 'h') + abline(a = leverage_threshold, b= 0, col = 'red')
+```
+
+```{r}
+cooks_distance <- cooks.distance(life_exp_lm_3)
+outliers <- union(as.numeric(names(cooks_distance)[cooks_distance > cooks_threshold]), as.numeric(names(hatvalues(life_exp_lm_3)[hatvalues(life_exp_lm_3) > leverage_threshold])))
+
+
+df_no_outlier <- df[- outliers,]
+
+```
+
+```{r}
+life_exp_lm_4 <- lm(Life_Expectancy ~ Status + Adult_Mortality + Infant_Deaths + Alcohol
+                                      + Percentage_Expenditure + BMI + Polio + Diphtheria 
+                                      + HIV_AIDS + Income_Composition_Of_Resources 
+                                      + Schooling + Continent + Status*Percentage_Expenditure
+                                      + Continent*BMI + Status*Adult_Mortality
+                                      , data = df_no_outlier)
+
+summary(life_exp_lm_4)
+avPlots(life_exp_lm_4)
+
+# Decided not to remove the outliers as the model does not significantly improve, also losing 10% of valuable information
+```
+
+
+```{r}
+plot(rstandard(life_exp_lm_3))
+max(rstandard(life_exp_lm_3))
+sort(rstandard(life_exp_lm_3))
+
+plot((hatvalues(life_exp_lm_3)))
+```
+
+
+## Diagonistics
+```{r}
+plot(life_exp_lm_3)
+```
+
+```{r}
+summary(life_exp_lm_3)
+```
+
+
+```{r}
+# Residuals have mean 0
+mean(life_exp_lm_3$residuals)
+
+stand_residuals <- (life_exp_lm_3$residuals - mean(life_exp_lm_3$residuals)) / sd(life_exp_lm_3$residuals)
+
+plot(life_exp_lm_3$fitted.values , stand_residuals , main='Standardized Residuals vs Fitted Values' , ylim = c(-3,3))  + abline(h=0) + abline(h=-3 , col='red') + abline(h=3 , col='red')
+
+lmtest::bptest(life_exp_lm_3)
+
+durbinWatsonTest(life_exp_lm_3)
+```
+
+```{r}
+plot(rstandard(life_exp_lm_3))
+```
+
+
+
+```{r}
+library(lmtest)
+library(sandwich)
+
+coeftest(life_exp_lm_3, vcov = vcovHC(life_exp_lm_3, type = 'HC0'))
+
+```
+
+
+```{r}
+df_1 <- read.csv("Life Expectancy Data.csv", header = TRUE)
+length(intersect(which(is.na(df_1$Hepatitis.B)),
+                 which(is.na(df_1$Population))))/length(which(is.na(df_1$Population)))
+
+length(intersect(which(is.na(df_1$GDP)),
+                 which(is.na(df_1$Population))))/length(which(is.na(df_1$GDP)))
+```
+
